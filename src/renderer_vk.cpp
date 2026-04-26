@@ -380,6 +380,7 @@ VK_IMPORT_DEVICE
 			EXT_line_rasterization,
 			EXT_memory_budget,
 			EXT_shader_viewport_index_layer,
+			EXT_swapchain_maintenance1,
 			KHR_present_id,
 			KHR_present_wait,
 			KHR_draw_indirect_count,
@@ -422,6 +423,7 @@ VK_IMPORT_DEVICE
 		{ "VK_EXT_line_rasterization",              1, false, false, true,                                                          Layer::Count },
 		{ "VK_EXT_memory_budget",                   1, false, false, true,                                                          Layer::Count },
 		{ "VK_EXT_shader_viewport_index_layer",     1, false, false, true,                                                          Layer::Count },
+		{ "VK_EXT_swapchain_maintenance1",          1, false, false, true,                                                          Layer::Count },
 		{ "VK_KHR_present_id",                      1, false, false, true,                                                          Layer::Count },
 		{ "VK_KHR_present_wait",                    1, false, false, true,                                                          Layer::Count },
 		{ "VK_KHR_draw_indirect_count",             1, false, false, true,                                                          Layer::Count },
@@ -2984,22 +2986,36 @@ VK_IMPORT_DEVICE
 				return suspended;
 			}
 
-			uint32_t flags = _resolution.reset & ~(0
+			uint32_t maskFlags = ~(0
 				| BGFX_RESET_SUSPEND
 				| BGFX_RESET_MAXANISOTROPY
 				| BGFX_RESET_DEPTH_CLAMP
 				);
+
+			if (s_extension[Extension::EXT_swapchain_maintenance1].m_supported && !!((_resolution.reset ^ m_resolution.reset) & BGFX_RESET_VSYNC))
+			{
+				m_resolution.reset = (m_resolution.reset & ~BGFX_RESET_VSYNC) | (_resolution.reset & BGFX_RESET_VSYNC);
+				for (uint16_t ii = 0; ii < m_numWindows; ++ii)
+				{
+					FrameBufferVK& fb = isValid(m_windows[ii])
+						? m_frameBuffers[m_windows[ii].idx]
+						: m_backBuffer
+						;
+					fb.m_swapChain.m_resolution.reset = (fb.m_swapChain.m_resolution.reset & ~BGFX_RESET_VSYNC) | (_resolution.reset & BGFX_RESET_VSYNC);
+				}
+				maskFlags &= ~BGFX_RESET_VSYNC;
+			}
 
 			if (false
 			||  m_resolution.formatColor        != _resolution.formatColor
 			||  m_resolution.formatDepthStencil != _resolution.formatDepthStencil
 			||  m_resolution.width              != _resolution.width
 			||  m_resolution.height             != _resolution.height
-			||  m_resolution.reset              != flags
+			|| (m_resolution.reset&maskFlags)   != (_resolution.reset&maskFlags)
 			||  m_backBuffer.m_swapChain.m_needToRecreateSurface
 			||  m_backBuffer.m_swapChain.m_needToRecreateSwapchain)
 			{
-				flags &= ~BGFX_RESET_INTERNAL_FORCE;
+				uint32_t flags = _resolution.reset & (~BGFX_RESET_INTERNAL_FORCE);
 
 				if (m_backBuffer.m_nwh != g_platformData.nwh)
 				{
@@ -7426,7 +7442,10 @@ retry:
 		m_lastImageAcquiredSemaphore = VK_NULL_HANDLE;
 
 		const uint64_t recreateSurfaceMask     = BGFX_RESET_HIDPI;
-		const uint64_t recreateSwapchainMask   = BGFX_RESET_VSYNC | BGFX_RESET_SRGB_BACKBUFFER;
+		const uint64_t recreateSwapchainMask   = 0
+			| BGFX_RESET_SRGB_BACKBUFFER
+			| (s_extension[Extension::EXT_swapchain_maintenance1].m_supported ? BGFX_RESET_NONE : BGFX_RESET_VSYNC)
+			;
 		const uint64_t recreateAttachmentsMask = BGFX_RESET_MSAA_MASK;
 
 		const bool recreateSurface = false
@@ -7803,12 +7822,30 @@ retry:
 		m_supportsReadback      = 0 != (imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 		m_supportsManualResolve = 0 != (imageUsage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 
+		m_presentModeWithVSyncIdx = findPresentMode(true);
+		m_presentModeWithoutVSyncIdx = findPresentMode(false);
 		const bool vsync = !!(m_resolution.reset & BGFX_RESET_VSYNC);
-		uint32_t presentModeIdx = findPresentMode(vsync);
+		uint32_t presentModeIdx = vsync ? m_presentModeWithVSyncIdx : m_presentModeWithoutVSyncIdx;
 		if (UINT32_MAX == presentModeIdx)
 		{
 			BX_TRACE("Create swapchain error: Unable to find present mode (vsync: %d).", vsync);
 			return VK_ERROR_INITIALIZATION_FAILED;
+		}
+
+		VkSwapchainPresentModesCreateInfoEXT modesInfo;
+		if (UINT32_MAX == m_presentModeWithVSyncIdx || UINT32_MAX == m_presentModeWithoutVSyncIdx)
+		{
+			s_extension[Extension::EXT_swapchain_maintenance1].m_supported = false;
+		}
+		else if (s_extension[Extension::EXT_swapchain_maintenance1].m_supported)
+		{
+			VkPresentModeKHR modes[] = { s_presentMode[m_presentModeWithVSyncIdx].mode, s_presentMode[m_presentModeWithoutVSyncIdx].mode };
+			modesInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT;
+			modesInfo.presentModeCount = 2;
+			modesInfo.pPresentModes = modes;
+			modesInfo.pNext = m_sci.pNext;
+
+			m_sci.pNext = &modesInfo;
 		}
 
 		m_sci.surface            = m_surface;
@@ -8311,6 +8348,17 @@ retry:
 				presentIdInfo.swapchainCount = 1;
 				presentIdInfo.pPresentIds = &m_lastPresentId;
 				pi.pNext = &presentIdInfo;
+			}
+
+			VkSwapchainPresentModeInfoEXT presentModeInfo;
+			if (s_extension[Extension::EXT_swapchain_maintenance1].m_supported)
+			{
+				uint32_t presentModeIdx = !!(m_resolution.reset & BGFX_RESET_VSYNC) ? m_presentModeWithVSyncIdx : m_presentModeWithoutVSyncIdx;;
+				presentModeInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT;
+				presentModeInfo.swapchainCount = 1;
+				presentModeInfo.pPresentModes = &s_presentMode[presentModeIdx].mode;
+				presentModeInfo.pNext = pi.pNext;
+				pi.pNext = &presentModeInfo;
 			}
 
 			VkResult result;
