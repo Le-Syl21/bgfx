@@ -7833,13 +7833,15 @@ retry:
 		}
 
 		VkSwapchainPresentModesCreateInfoEXT modesInfo;
+		VkPresentModeKHR modes[2];
 		if (UINT32_MAX == m_presentModeWithVSyncIdx || UINT32_MAX == m_presentModeWithoutVSyncIdx)
 		{
 			s_extension[Extension::EXT_swapchain_maintenance1].m_supported = false;
 		}
 		else if (s_extension[Extension::EXT_swapchain_maintenance1].m_supported)
 		{
-			VkPresentModeKHR modes[] = { s_presentMode[m_presentModeWithVSyncIdx].mode, s_presentMode[m_presentModeWithoutVSyncIdx].mode };
+			modes[0] = s_presentMode[m_presentModeWithVSyncIdx].mode;
+			modes[1] = s_presentMode[m_presentModeWithoutVSyncIdx].mode;
 			modesInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT;
 			modesInfo.presentModeCount = 2;
 			modesInfo.pPresentModes = modes;
