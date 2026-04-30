@@ -47,7 +47,6 @@ namespace bgfx { namespace gl
 			, m_eglWindow(NULL)
 #endif
 			, m_msaaContext(false)
-			, m_swapInterval(0)
 		{
 		}
 
@@ -82,9 +81,6 @@ namespace bgfx { namespace gl
 
 		// true when MSAA is handled by the context instead of using MSAA FBO
 		bool m_msaaContext;
-		// Desired eglSwapInterval value, cached so it can be re-applied whenever a swap
-		// chain's surface becomes current (eglSwapInterval is per-surface).
-		int m_swapInterval;
 	};
 } /* namespace gl */ } // namespace bgfx
 
